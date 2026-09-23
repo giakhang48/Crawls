@@ -1,52 +1,38 @@
-SEG301 – Wikipedia Movies Focused Web Crawler
-Một Focused Web Crawler chạy trên web public thật cho chủ đề Movies & Entertainment, được xây dựng cho môn SEG301.
-Crawler bắt đầu từ một trang seed duy nhất trên Wikipedia, sau đó tự tìm các trang danh sách phim, lần theo hyperlink đến các trang phim, trích xuất nội dung và metadata, rồi lưu kết quả crawl vào SQLite.
+# SEG301 - Wikipedia Movies Focused Web Crawler
+
+> **Chủ đề:** Movies & Entertainment  
+> **Nguồn crawl:** Wikipedia  
+> **Phương pháp:** Focused Web Crawling + BFS  
+> **Output:** SQLite Database
+
+Crawler thu thập dữ liệu phim trực tiếp từ Wikipedia, bắt đầu từ trang `Lists_of_films`, tự phát hiện hyperlink, lọc URL phù hợp với chủ đề phim và lưu dữ liệu vào SQLite.
+
 ---
-1. Tổng quan dự án
-Seed URL
-```text
-https://en.wikipedia.org/wiki/Lists_of_films
-```
-Các kỹ thuật chính
-Focused Web Crawling
-Breadth-First Search (BFS)
-URL Frontier bằng `deque`
-`requests` để gửi HTTP request
-`BeautifulSoup` + `lxml` để parse HTML
-Chuẩn hóa và lọc URL
-`queued` + `visited` để tránh crawl trùng URL
-SHA-256 để phát hiện duplicate content
-Kiểm tra `robots.txt`
-Retry / backoff khi gặp HTTP `429` hoặc `503`
-Lưu dữ liệu bằng SQLite
-Hỗ trợ resume khi crawl bị gián đoạn
-Validation và thống kê kết quả crawl
-Crawler sử dụng Wikipedia thật trên Internet, không dùng local mirror và không dùng dataset phim tải sẵn để giả lập website.
----
-2. Pipeline Crawling
+
+## 1. Pipeline
+
 ```mermaid
-flowchart TD
-    A[Seed URL<br/>Lists_of_films] --> B[Kiểm tra robots.txt]
+flowchart LR
+    A[Seed URL] --> B[robots.txt]
     B --> C[URL Frontier]
-    C --> D[BFS Traversal]
-    D --> E[HTTP Request<br/>requests]
-    E --> F[HTML Response]
-    F --> G[Parse HTML<br/>BeautifulSoup]
-    G --> H[Extract title, content, metadata]
-    G --> I[Extract hyperlinks]
-    I --> J[Normalize + Filter URL]
-    J --> K{URL mới và hợp lệ?}
-    K -- Có --> C
-    K -- Không --> L[Bỏ qua]
-    H --> M[Kiểm tra duplicate content<br/>SHA-256]
-    M --> N[Lưu vào SQLite]
-    N --> O[Validation + Statistics]
+    C --> D[BFS]
+    D --> E[Requests]
+    E --> F[HTML]
+    F --> G[BeautifulSoup]
+    G --> H[Extract Data]
+    G --> I[Extract Links]
+    I --> J[Normalize & Filter]
+    J --> C
+    H --> K[SHA-256]
+    K --> L[SQLite]
 ```
+
 Pipeline rút gọn:
+
 ```text
 Seed URL
    ↓
-Kiểm tra robots.txt
+robots.txt
    ↓
 URL Frontier
    ↓
@@ -65,237 +51,206 @@ Normalize / Filter URL
 Đưa URL mới vào Frontier
    ↓
 SQLite
-   ↓
-Validation
 ```
+
 ---
-3. Phạm vi Focused BFS
-Crawler chỉ tập trung vào cấu trúc liên quan đến phim.
+
+## 2. Phạm vi crawl
+
+Seed:
+
+```text
+https://en.wikipedia.org/wiki/Lists_of_films
+```
+
+Crawler duyệt theo BFS:
+
 ```text
 Depth 0
 └── Lists_of_films
 
 Depth 1
-├── List_of_films:_A
-├── List_of_films:_B
-├── ...
-├── List_of_films:_J–K
-├── List_of_films:_N–O
-├── List_of_films:_Q–R
-├── List_of_films:_U–V–W
-├── List_of_films:_X–Y–Z
-└── List_of_films:_numbers
+└── Các trang danh sách phim A-Z / grouped list pages
 
 Depth 2
-└── Các movie article được phát hiện
+└── Các trang movie article
 ```
-Các trang movie article được xem là terminal node.
-Crawler không tiếp tục đi từ trang phim sang các chủ đề khác như:
-diễn viên
-đạo diễn
-quốc gia
-âm nhạc
-reference
-các trang điều hướng chung của Wikipedia
-các namespace đặc biệt / admin
-Đây là lý do crawler này được gọi là Focused Crawler, thay vì crawler thông thường gặp link nào cũng follow.
+
+Các movie article được xem là điểm dừng. Crawler không tiếp tục đi sang actor, director, country, reference hoặc các chủ đề Wikipedia không liên quan.
+
 ---
-4. Tại sao dùng BFS?
-Crawler sử dụng Breadth-First Search (BFS), tức duyệt theo chiều rộng.
-BFS xử lý URL theo từng tầng:
+
+## 3. Phương pháp sử dụng
+
+### Focused Web Crawling
+
+Không follow toàn bộ hyperlink trên website.
+
+Crawler chỉ giữ các URL phù hợp với scope **Movies**, nhờ đó tránh crawl lan sang nội dung không liên quan.
+
+### BFS - Breadth-First Search
+
+URL được duyệt theo từng tầng:
+
 ```text
-Depth 0 → toàn bộ Depth 1 → toàn bộ Depth 2
+Depth 0 → Depth 1 → Depth 2
 ```
+
 URL Frontier dùng `deque`:
+
 ```python
-append()   # thêm URL mới vào cuối hàng đợi
-popleft()  # lấy URL ở đầu hàng đợi ra crawl
+append()      # thêm URL mới
+popleft()     # lấy URL đầu hàng đợi
 ```
-Ưu điểm:
-dễ kiểm soát `MAX_DEPTH`
-duyệt theo level rõ ràng
-phù hợp với cấu trúc crawl từ seed → list page → movie page
-đúng yêu cầu BFS của assignment
----
-5. URL Frontier là gì?
-URL Frontier là hàng đợi chứa các URL đã được phát hiện nhưng chưa crawl.
-Ví dụ:
-```text
-Frontier:
-[A, B, C]
 
-crawl A
-↓
-phát hiện thêm D, E
-↓
+### URL Frontier
 
-Frontier:
-[B, C, D, E]
-```
-Crawler sử dụng:
-`queued`: URL đang nằm trong Frontier
-`visited`: URL đã crawl xong
-Mục đích là tránh cùng một URL bị add hoặc request nhiều lần.
+URL Frontier là hàng đợi chứa các URL:
+
+> **đã được phát hiện nhưng chưa được crawl**
+
+Crawler dùng thêm:
+
+- `queued`: URL đang chờ trong Frontier
+- `visited`: URL đã crawl
+
+để tránh crawl trùng URL.
+
 ---
-6. Kiểm tra robots.txt
-Trước khi crawl, chương trình kiểm tra:
+
+## 4. Cách crawler xử lý một trang
+
+Với mỗi URL, crawler thực hiện:
+
+1. Kiểm tra URL có được phép theo `robots.txt`.
+2. Gửi HTTP request bằng `requests`.
+3. Nhận HTML từ Wikipedia.
+4. Parse HTML bằng `BeautifulSoup`.
+5. Lấy `title`, text content và metadata.
+6. Extract các hyperlink `<a href="...">`.
+7. Normalize và filter URL.
+8. URL hợp lệ và chưa xuất hiện sẽ được thêm vào Frontier.
+9. Nội dung được kiểm tra duplicate bằng SHA-256.
+10. Kết quả được lưu vào SQLite.
+
+---
+
+## 5. URL Filtering
+
+Crawler chỉ giữ các URL phù hợp với scope.
+
+Một số rule chính:
+
+- chỉ nhận `http` / `https`
+- chỉ nhận domain `en.wikipedia.org`
+- chỉ nhận article path `/wiki/...`
+- loại URL fragment và query không cần thiết
+- loại ảnh, CSS, JavaScript, PDF, ZIP, audio, video...
+- loại namespace không liên quan như:
+  - `Special:`
+  - `Help:`
+  - `Template:`
+  - `Talk:`
+  - `User:`
+  - `Category:`
+  - `File:`
+
+---
+
+## 6. Duplicate Detection
+
+Crawler xử lý hai loại duplicate.
+
+| Loại | Cách xử lý |
+|---|---|
+| Trùng URL | `queued` + `visited` |
+| Trùng nội dung | SHA-256 |
+
+SHA-256 tạo một hash đại diện cho nội dung trang.
+
+Nếu hai URL khác nhau có cùng nội dung, crawler có thể phát hiện bằng content hash.
+
+---
+
+## 7. robots.txt và Rate Limit
+
+Trước khi crawl, chương trình đọc:
+
 ```text
 https://en.wikipedia.org/robots.txt
 ```
-Crawler dùng `RobotFileParser` và gọi `can_fetch()` trước khi request URL.
-Mục đích:
-tôn trọng quy định crawl của website
-tránh các path bị hạn chế
-tránh khu vực special/admin
-dừng nếu seed URL không được phép crawl
-Crawler cũng sử dụng User-Agent mô tả rõ đây là bot phục vụ mục đích học thuật.
----
-7. HTTP Request và xử lý Rate Limit
-Trang web được tải bằng:
-```python
-requests
-```
+
+Crawler dùng `RobotFileParser` để kiểm tra URL có được phép crawl hay không.
+
 Cấu hình mặc định:
+
 ```text
 Request timeout : 30 giây
 Crawl delay     : 2 giây
 Max retries     : 6
 ```
-Nếu Wikipedia trả về:
-```text
-HTTP 429
-HTTP 503
-```
-crawler sẽ:
-kiểm tra header `Retry-After`;
-chờ đúng khoảng thời gian được yêu cầu nếu có;
-nếu không có thì dùng exponential backoff;
-retry request.
-Mục đích là tránh gửi request quá nhanh lên website public.
+
+Nếu gặp HTTP `429` hoặc `503`, crawler hỗ trợ:
+
+- `Retry-After`
+- exponential backoff
+- retry request
+
 ---
-8. Parse HTML
-HTML được parse bằng:
-```text
-BeautifulSoup + lxml
-```
-Crawler lấy:
-title
-visible text content
-hyperlink (`<a href="...">`)
-một số movie metadata từ infobox
-Ví dụ hyperlink:
-```html
-<a href="/wiki/Inception">Inception</a>
-```
-Crawler sẽ chuyển relative URL thành absolute URL rồi kiểm tra xem URL đó có nằm trong scope cần crawl hay không.
----
-9. Normalize và Filter URL
-Trước khi URL mới được đưa vào Frontier, crawler sẽ chuẩn hóa và lọc.
-Các rule chính:
-chỉ giữ `http` / `https`
-chỉ giữ domain `en.wikipedia.org`
-chỉ giữ path dạng `/wiki/...`
-bỏ URL fragment
-bỏ query string không cần thiết
-bỏ file ảnh, CSS, JavaScript, PDF, ZIP, audio, video...
-bỏ các namespace như:
-`Special:`
-`Wikipedia:`
-`Help:`
-`Template:`
-`Talk:`
-`User:`
-`Category:`
-`File:`
-`MediaWiki:`
-Các rule focused cũng giúp crawler không đi lạc khỏi chủ đề Movies.
----
-10. Duplicate Detection
-Crawler dùng hai cơ chế chống trùng.
-Duplicate URL
-Dùng:
-```text
-queued
-visited
-```
-Mục đích:
-URL đã có trong Frontier thì không add lại
-URL đã crawl rồi thì không request lại
-Duplicate Content
-Nội dung trang được hash bằng:
-```text
-SHA-256
-```
-SHA-256 có thể hiểu như một “dấu vân tay” của content.
-Nếu hai URL khác nhau nhưng trả về nội dung giống hệt nhau thì SHA-256 giúp phát hiện duplicate content.
----
-11. Lưu dữ liệu bằng SQLite
-Database output:
+
+## 8. Dữ liệu được lưu
+
+Output:
+
 ```text
 data/wikipedia_movies.db
 ```
-Bảng `pages`
-Đây là collection chính của Search Engine.
-Lưu:
-URL
-domain
-page type
-title
-visible text content
-BFS depth
-HTTP status code
-response time
-crawl timestamp
-SHA-256 content hash
-validation flags
-probable-film flag
-Bảng `links`
+
+### Bảng `pages`
+
+Lưu dữ liệu chính của từng trang:
+
+- URL
+- domain
+- page type
+- title
+- content
+- depth
+- HTTP status
+- response time
+- crawl time
+- SHA-256 hash
+- probable-film flag
+
+### Bảng `links`
+
 Lưu hyperlink graph:
+
 ```text
-source_url
-target_url
+source_url → target_url
 ```
-Bảng `movies`
-Lưu movie metadata lấy từ Wikipedia infobox:
-title
-director
-release date
-running time
-country
-language
-probable-film flag
-Bảng `errors`
-Lưu request lỗi hoặc lỗi trong quá trình crawl.
-Bảng `robots_checks`
-Lưu kết quả kiểm tra robots.txt.
-Bảng `crawl_runs`
-Lưu thông tin từng lần chạy:
-thời gian bắt đầu
-thời gian kết thúc
-seed URL
-max depth
-max pages
-số page đã lưu
-số movie đã lưu
-số request lỗi
-stop reason
+
+### Bảng `movies`
+
+Lưu một số metadata lấy từ infobox:
+
+- title
+- director
+- release date
+- running time
+- country
+- language
+
+### Các bảng hỗ trợ
+
+- `errors`
+- `robots_checks`
+- `crawl_runs`
+
 ---
-12. Probable Film Detection
-Mỗi trang ở Depth 2 được xem là một movie candidate.
-Crawler tiếp tục kiểm tra infobox để tìm các tín hiệu như:
-```text
-Directed by
-Release date
-Running time
-Produced by
-```
-Nếu đủ tín hiệu liên quan đến phim, trang được đánh dấu:
-```text
-probable_film = 1
-```
-Flag này dùng để phân tích chất lượng dữ liệu, không thay đổi logic BFS.
----
-13. Cấu trúc project
+
+## 9. Cấu trúc source code
+
 ```text
 Assignment1/
 ├── main.py
@@ -308,65 +263,52 @@ Assignment1/
 ├── validate.py
 ├── requirements.txt
 ├── README.md
-├── PRESENTATION_CHEAT_SHEET.md
-├── TEST_BEFORE_FULL.md
-├── .gitignore
 └── data/
-    └── wikipedia_movies.db
 ```
-File	Chức năng
-`main.py`	Entry point và command chạy crawler
-`config.py`	Seed URL, depth, page limit, timeout, delay, path
-`crawler.py`	Vòng lặp crawl chính, Requests, robots, retry, BFS
-`url_frontier.py`	BFS queue, `queued`, `visited`
-`parser.py`	Parse HTML, extract link, filter URL
-`duplicate.py`	Phát hiện duplicate content bằng SHA-256
-`database.py`	SQLite schema và kết nối database
-`validate.py`	Kiểm tra kết quả crawl và thống kê
+
+| File | Chức năng |
+|---|---|
+| `main.py` | Entry point, nhận command chạy crawler |
+| `config.py` | Cấu hình seed, depth, page limit, delay |
+| `crawler.py` | Logic crawl chính |
+| `url_frontier.py` | BFS Frontier, queued, visited |
+| `parser.py` | Parse HTML, extract data/link, filter URL |
+| `duplicate.py` | SHA-256 duplicate detection |
+| `database.py` | SQLite schema |
+| `validate.py` | Kiểm tra và thống kê kết quả |
+
 ---
-14. Cài đặt
-Tạo virtual environment:
+
+## 10. Cài đặt
+
 ```powershell
 py -m venv .venv
-```
-Kích hoạt:
-```powershell
 .venv\Scripts\activate
-```
-Cài thư viện:
-```powershell
 pip install -r requirements.txt
 ```
----
-15. Kiểm tra robots.txt
-Chạy:
+
+Kiểm tra robots.txt:
+
 ```powershell
 python main.py robots-check
 ```
-Kết quả mong đợi:
-```text
-[robots] Seed -> ALLOW
-```
+
 ---
-16. Chạy test
-Nên chạy test trước:
+
+## 11. Chạy test
+
 ```powershell
 python main.py crawl-test --reset --delay 2
 ```
-Test mặc định:
+
+Test mặc định giới hạn:
+
 ```text
-100 saved pages
+100 pages
 ```
-Một test ổn nên có:
-```text
-Root pages               : 1
-List pages               : > 0
-Movie candidate pages    : > 0
-Failed requests          : 0
-Unresolved crawl errors  : 0
-RESULT: PASS
-```
-Ví dụ test thành công:
+
+Ví dụ kết quả test thành công:
+
 ```text
 Pages saved             : 100
 Movie candidates saved  : 79
@@ -379,164 +321,129 @@ Depth 0                 : 1
 Depth 1                 : 20
 Depth 2                 : 79
 
-Root pages              : 1
-List pages              : 20
-Movie candidate pages   : 79
-Probable film articles  : 77
-
 RESULT: PASS
 ```
-Test dừng với:
-```text
-MAX_PAGES reached
-```
-là bình thường vì test cố tình giới hạn 100 page.
+
 ---
-17. Chạy full crawl
-Chạy:
+
+## 12. Chạy full crawl
+
 ```powershell
 python main.py crawl-full --reset
 ```
+
 Cấu hình mặc định:
+
 ```text
 MAX_DEPTH   = 2
 MAX_PAGES   = 100,000
 CRAWL_DELAY = 2 giây
 ```
-Có thể giới hạn nhỏ hơn:
+
+Có thể đặt giới hạn khác:
+
 ```powershell
 python main.py crawl-full --reset --max-pages 5000
 ```
-hoặc:
-```powershell
-python main.py crawl-full --reset --max-pages 20000
-```
+
 ---
-18. Resume khi bị gián đoạn
-Crawler hỗ trợ resume.
-Nếu terminal bị đóng hoặc cậu bấm:
-```text
-Ctrl + C
-```
-thì không dùng `--reset`.
+
+## 13. Resume khi bị gián đoạn
+
+Nếu đang crawl mà terminal bị đóng hoặc bấm `Ctrl + C`, dữ liệu đã crawl vẫn được giữ trong SQLite.
+
 Chạy lại:
+
 ```powershell
 python main.py crawl-full
 ```
-Crawler sẽ:
-đọc các page đã lưu trong SQLite;
-đưa chúng vào `visited`;
-khôi phục content hash;
-đọc hyperlink graph đã lưu;
-tìm các URL đã discover nhưng chưa crawl;
-khôi phục Frontier;
-crawl tiếp phần còn lại.
-Không cần chạy lại từ đầu.
+
+**Không dùng `--reset` khi muốn resume.**
+
+Crawler sẽ phục hồi:
+
+```text
+pages đã crawl
+      ↓
+visited
+      ↓
+hyperlink graph
+      ↓
+URL đã discover nhưng chưa crawl
+      ↓
+Frontier
+      ↓
+tiếp tục crawl
+```
+
 ---
-19. Validation
+
+## 14. Validation
+
 Chạy:
+
 ```powershell
 python main.py validate
 ```
+
 Validation kiểm tra:
-tổng số page
-số root page
-số list page
-số movie candidate
-số probable film
-tổng số link
-invalid page
-page không phải HTTP 200
-duplicate URL
-duplicate content
-unresolved crawl error
-số page theo BFS depth
-stop reason của lần chạy gần nhất
-Kết quả tốt:
+
+- tổng số page
+- số page theo depth
+- movie candidate
+- probable film
+- hyperlink
+- invalid page
+- HTTP status
+- duplicate URL
+- duplicate content
+- crawl error
+- stopping condition
+
+Kết quả hợp lệ:
+
 ```text
 RESULT: PASS
 ```
+
 ---
-20. Điều kiện dừng crawler
-Crawler dừng trong hai trường hợp.
-1. URL Frontier rỗng
+
+## 15. Điều kiện dừng
+
+Crawler dừng khi:
+
 ```text
-Stop reason: URL Frontier is empty
+URL Frontier is empty
 ```
-Nghĩa là mọi URL đã được discover trong scope hiện tại đều đã được xử lý.
-2. Đạt MAX_PAGES
+
+hoặc:
+
 ```text
-Stop reason: MAX_PAGES reached
+MAX_PAGES reached
 ```
-Nghĩa là crawler dừng vì giới hạn số page đã cấu hình.
-Trong trường hợp này không được nói rằng crawler đã crawl hết toàn bộ frontier.
-Tuy nhiên dữ liệu đã lưu vẫn hợp lệ để:
-demo crawler
-phân tích
-indexing
-xây dựng Search Engine ở bước sau
+
+Nếu `MAX_PAGES reached`, dữ liệu đã crawl vẫn hợp lệ nhưng không được xem là đã crawl hết toàn bộ frontier.
+
 ---
-21. Phạm vi của project
-Project này không claim crawl toàn bộ Wikipedia.
-Scope được định nghĩa là:
+
+## Tóm tắt
+
 ```text
-Lists_of_films
-        ↓
-film index/list pages
-        ↓
-movie article candidates
-```
-Vì vậy tính đầy đủ của crawl chỉ được đánh giá trong phạm vi focused scope và stopping condition đã cấu hình.
----
-22. Các fix ở bản V2
-Bản V2 được chỉnh sau khi test trực tiếp với Wikipedia live:
-User-Agent mô tả rõ bot học thuật
-delay mặc định tăng lên 2 giây
-xử lý HTTP `429`
-xử lý HTTP `503`
-hỗ trợ header `Retry-After`
-exponential backoff
-retry tối đa 6 lần
-hỗ trợ các grouped film index page:
-`List_of_films:_J–K`
-`List_of_films:_N–O`
-`List_of_films:_Q–R`
-`List_of_films:_U–V–W`
-`List_of_films:_X–Y–Z`
-Wikipedia không chia đơn giản thành đúng 26 trang A-Z riêng biệt, nên cần hỗ trợ các grouped page để crawl đúng cấu trúc live hiện tại.
----
-23. Tóm tắt phương pháp
-```text
-Phương pháp:
 Focused Web Crawling + BFS
-
-Seed:
-https://en.wikipedia.org/wiki/Lists_of_films
-
-HTTP:
+        ↓
+URL Frontier
+        ↓
 Requests
-
-HTML Parser:
-BeautifulSoup + lxml
-
-URL Frontier:
-deque
-
-Chống trùng URL:
-queued + visited
-
-Chống trùng content:
-SHA-256
-
-Database:
+        ↓
+BeautifulSoup
+        ↓
+Extract Data + Hyperlinks
+        ↓
+Normalize / Filter
+        ↓
+Duplicate Detection
+        ↓
 SQLite
-
-Policy:
-robots.txt + polite crawl delay
-
-Điều kiện dừng:
-MAX_PAGES hoặc URL Frontier rỗng
 ```
----
-24. Giải thích ngắn gọn toàn bộ hệ thống
-> Crawler bắt đầu từ trang danh sách phim của Wikipedia, dùng BFS để lần theo hyperlink đến các trang phim, dùng Requests để tải HTML, BeautifulSoup để parse nội dung, filter URL để giữ đúng scope Movies, loại duplicate và lưu toàn bộ kết quả vào SQLite.
+
+**Crawler bắt đầu từ danh sách phim của Wikipedia, tự discover các URL phim thông qua hyperlink, crawl theo BFS, lọc đúng scope Movies và lưu kết quả vào SQLite.**
