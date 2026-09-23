@@ -1,186 +1,254 @@
-import json
 import re
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse, unquote
+
 from bs4 import BeautifulSoup
 
-from config import (
-    ALLOWED_DOMAINS,
-    IGNORED_EXTENSIONS,
-    ALLOWED_PATH_PREFIXES,
-    BLOCKED_PATH_PREFIXES,
-)
+import config
+
+YEAR_RE = re.compile(r"\b(?:18|19|20)\d{2}\b")
+LIST_TITLE_RE = re.compile(r"^List_of_films:_(?:numbers|[A-Z](?:[–-][A-Z])*)$", re.I)
 
 
 def normalize_url(url: str) -> str:
+    """Normalize a Wikipedia URL for duplicate control."""
     parsed = urlparse(url)
-
     scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
 
-    # Bỏ fragment vì #... không tạo tài nguyên HTTP khác.
+    # Strip fragment and query. The assignment corpus targets canonical article pages.
     path = parsed.path or "/"
-
-    # Chuẩn hóa trailing slash nhẹ nhàng, nhưng giữ root "/".
     if path != "/" and path.endswith("/"):
         path = path.rstrip("/")
 
-    normalized = urlunparse((
-        scheme,
-        netloc,
-        path,
-        parsed.params,
-        parsed.query,
-        "",
-    ))
-    return normalized
+    return urlunparse((scheme, netloc, path, "", "", ""))
 
 
-def allowed_domain(netloc: str) -> bool:
-    host = netloc.lower().split(":")[0]
-    return host in ALLOWED_DOMAINS
-
-
-def is_web_url(url: str) -> bool:
+def wikipedia_title_from_url(url: str):
     parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"}
+    if not parsed.path.startswith("/wiki/"):
+        return None
+    return unquote(parsed.path[len("/wiki/"):])
 
 
-def has_ignored_extension(url: str) -> bool:
-    path = urlparse(url).path.lower()
-    return any(path.endswith(ext) for ext in IGNORED_EXTENSIONS)
+def classify_page(url: str) -> str:
+    title = wikipedia_title_from_url(url)
+    if title == "Lists_of_films":
+        return "root"
+    if title and LIST_TITLE_RE.match(title):
+        return "list"
+    return "movie"
 
 
-def is_focused_path(path: str) -> bool:
-    """Kiểm tra path có nằm trong phạm vi focused crawling hay không."""
-    if any(path.startswith(p) for p in BLOCKED_PATH_PREFIXES):
-        return False
+def is_allowed_article_url(url: str) -> tuple[bool, str]:
+    parsed = urlparse(url)
 
-    # Nếu không cấu hình allow-list, coi như cho phép mọi path (trừ blocked).
-    if not ALLOWED_PATH_PREFIXES:
-        return True
+    if parsed.scheme not in {"http", "https"}:
+        return False, "non_http"
 
-    return any(path.startswith(p) for p in ALLOWED_PATH_PREFIXES)
+    if parsed.netloc.lower() not in config.ALLOWED_NETLOCS:
+        return False, "outside_domain"
+
+    lower_path = parsed.path.lower()
+    if any(lower_path.endswith(ext) for ext in config.IGNORED_EXTENSIONS):
+        return False, "ignored_extension"
+
+    if not parsed.path.startswith("/wiki/"):
+        return False, "not_article_path"
+
+    title = wikipedia_title_from_url(url)
+    if not title:
+        return False, "missing_title"
+
+    if any(title.startswith(prefix) for prefix in config.DISALLOWED_TITLE_PREFIXES):
+        return False, "disallowed_namespace"
+
+    return True, "accepted"
 
 
-def should_ignore_raw_href(href: str) -> bool:
-    if not href:
-        return True
-
-    h = href.strip().lower()
+def _content_root(soup: BeautifulSoup):
     return (
-        h.startswith("mailto:")
-        or h.startswith("javascript:")
-        or h.startswith("tel:")
-        or h.startswith("data:")
-        or h.startswith("#")
+        soup.select_one("div.mw-parser-output")
+        or soup.select_one("#mw-content-text")
+        or soup.find("main")
+        or soup.body
+        or soup
     )
 
 
-def _extract_json_ld_movie(soup: BeautifulSoup) -> dict:
-    """
-    Trang phim trên Letterboxd thường nhúng metadata dạng schema.org/Movie
-    trong <script type="application/ld+json">. Trích ra nếu có; nếu không
-    tìm thấy, trả về dict rỗng (không phải lỗi — nhiều trang không phải
-    trang phim, ví dụ trang danh sách, sẽ không có khối này).
-    """
-    for tag in soup.find_all("script", type="application/ld+json"):
-        raw = tag.string
-        if not raw:
-            continue
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            continue
+def clean_article_text(soup: BeautifulSoup) -> str:
+    root = _content_root(soup)
 
-        candidates = data if isinstance(data, list) else [data]
+    # Work on a copy so link extraction can still use the original soup.
+    root_soup = BeautifulSoup(str(root), "lxml")
+    for selector in [
+        "script", "style", "noscript", "sup.reference", "ol.references",
+        "div.reflist", "table.navbox", "div.navbox", "table.vertical-navbox",
+        "div.printfooter", "span.mw-editsection", "div.hatnote",
+    ]:
+        for node in root_soup.select(selector):
+            node.decompose()
 
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-            if item.get("@type") != "Movie":
-                continue
-
-            director_field = item.get("director")
-            if isinstance(director_field, list):
-                directors = ", ".join(
-                    d.get("name", "") for d in director_field if isinstance(d, dict)
-                )
-            elif isinstance(director_field, dict):
-                directors = director_field.get("name", "")
-            else:
-                directors = ""
-
-            rating = item.get("aggregateRating") or {}
-
-            return {
-                "film_name": item.get("name", ""),
-                "release_year": str(item.get("dateCreated") or item.get("datePublished") or ""),
-                "director": directors,
-                "rating_value": rating.get("ratingValue"),
-                "rating_count": rating.get("ratingCount"),
-            }
-
-    return {}
+    return root_soup.get_text(" ", strip=True)
 
 
-def extract_page_info(soup: BeautifulSoup, url: str, depth: int, status_code: int):
-    parsed = urlparse(url)
-    title = ""
+def parse_page(html: str, url: str) -> dict:
+    soup = BeautifulSoup(html, "lxml")
 
-    if soup.title:
-        title = soup.title.get_text(" ", strip=True)
+    h1 = soup.select_one("h1#firstHeading") or soup.select_one("h1")
+    if h1:
+        title = h1.get_text(" ", strip=True)
+    elif soup.title:
+        title = soup.title.get_text(" ", strip=True).replace(" - Wikipedia", "")
+    else:
+        title = ""
 
-    film_meta = _extract_json_ld_movie(soup)
-
-    # Loại script/style/noscript trước khi lấy visible-ish text.
-    # (Làm sau khi đã đọc JSON-LD ở trên, vì JSON-LD nằm trong <script>.)
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    content = soup.get_text(" ", strip=True)
-    content = re.sub(r"\s+", " ", content)
-
+    content = clean_article_text(soup)
     return {
-        "url": url,
-        "domain": parsed.netloc,
         "title": title,
         "content": content,
-        "depth": depth,
-        "status_code": status_code,
-        "film_name": film_meta.get("film_name"),
-        "release_year": film_meta.get("release_year"),
-        "director": film_meta.get("director"),
-        "rating_value": film_meta.get("rating_value"),
-        "rating_count": film_meta.get("rating_count"),
+        "page_type": classify_page(url),
+        "soup": soup,
     }
 
 
-def extract_links(soup: BeautifulSoup, current_url: str):
-    result = []
+def extract_root_list_links(soup: BeautifulSoup, current_url: str):
+    """From Lists_of_films, keep only the alphabetic A-Z and numbers list pages."""
+    accepted = []
+    seen = set()
+    root = _content_root(soup)
 
-    for tag in soup.find_all("a", href=True):
-        href = tag.get("href", "").strip()
+    for a in root.find_all("a", href=True):
+        absolute = normalize_url(urljoin(current_url, a["href"]))
+        title = wikipedia_title_from_url(absolute)
+        if title and LIST_TITLE_RE.match(title):
+            if absolute not in seen:
+                seen.add(absolute)
+                accepted.append(absolute)
 
-        if should_ignore_raw_href(href):
+    return accepted
+
+
+def extract_movie_links_from_list(soup: BeautifulSoup, current_url: str):
+    """Extract film-article candidates from a List_of_films:_X page.
+
+    Focus heuristic:
+    - candidate anchor must be inside a list item
+    - the list item's visible text must contain a film year (18xx/19xx/20xx)
+    - article must stay in en.wikipedia.org /wiki/
+    - reject Wikipedia namespaces and other List_of_* pages
+
+    This avoids following cast/director/reference/navigation links while still
+    discovering movie pages from the list itself.
+    """
+    accepted = []
+    seen = set()
+    root = _content_root(soup)
+
+    for li in root.find_all("li"):
+        li_text = li.get_text(" ", strip=True)
+        if not YEAR_RE.search(li_text):
             continue
 
-        absolute = normalize_url(urljoin(current_url, href))
+        for a in li.find_all("a", href=True):
+            text = a.get_text(" ", strip=True)
+            if not text or YEAR_RE.fullmatch(text):
+                continue
 
-        if not is_web_url(absolute):
+            absolute = normalize_url(urljoin(current_url, a["href"]))
+            allowed, _ = is_allowed_article_url(absolute)
+            if not allowed:
+                continue
+
+            title = wikipedia_title_from_url(absolute) or ""
+            if title.startswith("List_of_") or title.startswith("Lists_of_"):
+                continue
+            if title == "Lists_of_films":
+                continue
+
+            if absolute not in seen:
+                seen.add(absolute)
+                accepted.append(absolute)
+
+    return accepted
+
+
+def extract_focused_links(html: str, current_url: str):
+    """Return (accepted_links, rejected_count, rejection_reasons)."""
+    soup = BeautifulSoup(html, "lxml")
+    page_type = classify_page(current_url)
+
+    reasons = {}
+    rejected = 0
+
+    if page_type == "root":
+        raw = extract_root_list_links(soup, current_url)
+    elif page_type == "list":
+        raw = extract_movie_links_from_list(soup, current_url)
+    else:
+        # Focused crawler stops traversal at movie article pages.
+        raw = []
+
+    accepted = []
+    seen = set()
+    for url in raw:
+        ok, reason = is_allowed_article_url(url)
+        if not ok:
+            rejected += 1
+            reasons[reason] = reasons.get(reason, 0) + 1
             continue
-
-        parsed = urlparse(absolute)
-
-        if not allowed_domain(parsed.netloc):
+        if url in seen:
+            rejected += 1
+            reasons["duplicate_normalized"] = reasons.get("duplicate_normalized", 0) + 1
             continue
+        seen.add(url)
+        accepted.append(url)
 
-        if has_ignored_extension(absolute):
+    return accepted, rejected, reasons
+
+
+def extract_infobox_metadata(soup: BeautifulSoup) -> dict:
+    """Best-effort metadata from a Wikipedia film infobox."""
+    result = {
+        "directed_by": None,
+        "release_date": None,
+        "running_time": None,
+        "country": None,
+        "language": None,
+    }
+
+    infobox = soup.select_one("table.infobox")
+    if not infobox:
+        return result
+
+    labels = {
+        "Directed by": "directed_by",
+        "Release date": "release_date",
+        "Running time": "running_time",
+        "Country": "country",
+        "Language": "language",
+        "Languages": "language",
+    }
+
+    for tr in infobox.find_all("tr"):
+        th = tr.find("th")
+        td = tr.find("td")
+        if not th or not td:
             continue
+        label = th.get_text(" ", strip=True)
+        key = labels.get(label)
+        if key:
+            result[key] = td.get_text(" ", strip=True)
 
-        if not is_focused_path(parsed.path):
-            continue
+    return result
 
-        result.append(absolute)
 
-    # Loại trùng nhưng giữ thứ tự.
-    return list(dict.fromkeys(result))
+def is_probable_film_article(parsed: dict) -> bool:
+    """Quality heuristic; used for analysis, not for frontier discovery."""
+    soup = parsed["soup"]
+    infobox = soup.select_one("table.infobox")
+    if not infobox:
+        return False
+
+    infobox_text = infobox.get_text(" ", strip=True)
+    signals = ("Directed by", "Release date", "Running time", "Produced by")
+    return sum(1 for s in signals if s in infobox_text) >= 2

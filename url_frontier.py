@@ -1,27 +1,48 @@
 from collections import deque
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FrontierItem:
+    url: str
+    depth: int
 
 
 class URLFrontier:
-    """FIFO queue dùng cho BFS."""
+    """BFS URL frontier implemented with deque + queued + visited sets."""
 
     def __init__(self):
-        self._queue = deque()
-        self._queued = set()
+        self.queue = deque()
+        self.queued = set()
+        self.visited = set()
 
     def add(self, url: str, depth: int) -> bool:
-        if url in self._queued:
+        if url in self.visited or url in self.queued:
             return False
-        self._queue.append((url, depth))
-        self._queued.add(url)
+        self.queue.append(FrontierItem(url, depth))
+        self.queued.add(url)
         return True
 
-    def pop(self):
-        url, depth = self._queue.popleft()
-        self._queued.discard(url)
-        return url, depth
+    def get(self):
+        if not self.queue:
+            return None
+        item = self.queue.popleft()
+        self.queued.discard(item.url)
+        return item
+
+    def mark_visited(self, url: str):
+        self.visited.add(url)
+        self.queued.discard(url)
+
+    def is_visited(self, url: str) -> bool:
+        return url in self.visited
+
+    def empty(self) -> bool:
+        return not self.queue
 
     def __len__(self):
-        return len(self._queue)
+        return len(self.queue)
 
-    def empty(self):
-        return not self._queue
+    def restore_visited(self, urls):
+        for url in urls:
+            self.visited.add(url)
