@@ -1,186 +1,132 @@
-import json
-import re
+from collections import Counter
 from urllib.parse import urljoin, urlparse, urlunparse
+
 from bs4 import BeautifulSoup
 
-from config import (
-    ALLOWED_DOMAINS,
-    IGNORED_EXTENSIONS,
-    ALLOWED_PATH_PREFIXES,
-    BLOCKED_PATH_PREFIXES,
+IGNORED_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".css", ".js", ".zip",
+    ".pdf", ".mp4", ".mp3", ".webp", ".ico", ".woff", ".woff2",
 )
 
 
 def normalize_url(url: str) -> str:
-    parsed = urlparse(url)
-
-    scheme = parsed.scheme.lower()
-    netloc = parsed.netloc.lower()
-
-    # Bỏ fragment vì #... không tạo tài nguyên HTTP khác.
-    path = parsed.path or "/"
-
-    # Chuẩn hóa trailing slash nhẹ nhàng, nhưng giữ root "/".
-    if path != "/" and path.endswith("/"):
-        path = path.rstrip("/")
-
-    normalized = urlunparse((
-        scheme,
-        netloc,
-        path,
-        parsed.params,
-        parsed.query,
+    """Normalize URL for frontier de-duplication."""
+    p = urlparse(url)
+    return urlunparse((
+        p.scheme.lower(),
+        p.netloc.lower(),
+        p.path or "/",
         "",
+        p.query,
+        "",  # strip fragment
     ))
-    return normalized
 
 
-def allowed_domain(netloc: str) -> bool:
-    host = netloc.lower().split(":")[0]
-    return host in ALLOWED_DOMAINS
+def extract_page(html: str):
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.get_text(strip=True) if soup.title else ""
 
+    # The mirror puts the actual page payload in <main>. This avoids indexing
+    # navigation/boilerplate while still parsing the real HTTP-delivered HTML.
+    content_node = soup.find("main") or soup
+    content = content_node.get_text(separator=" ", strip=True)
 
-def is_web_url(url: str) -> bool:
-    parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"}
+    page_type = "other"
+    if content_node and content_node.has_attr("data-page-type"):
+        page_type = content_node.get("data-page-type", "other")
 
-
-def has_ignored_extension(url: str) -> bool:
-    path = urlparse(url).path.lower()
-    return any(path.endswith(ext) for ext in IGNORED_EXTENSIONS)
-
-
-def is_focused_path(path: str) -> bool:
-    """Kiểm tra path có nằm trong phạm vi focused crawling hay không."""
-    if any(path.startswith(p) for p in BLOCKED_PATH_PREFIXES):
-        return False
-
-    # Nếu không cấu hình allow-list, coi như cho phép mọi path (trừ blocked).
-    if not ALLOWED_PATH_PREFIXES:
-        return True
-
-    return any(path.startswith(p) for p in ALLOWED_PATH_PREFIXES)
-
-
-def should_ignore_raw_href(href: str) -> bool:
-    if not href:
-        return True
-
-    h = href.strip().lower()
-    return (
-        h.startswith("mailto:")
-        or h.startswith("javascript:")
-        or h.startswith("tel:")
-        or h.startswith("data:")
-        or h.startswith("#")
-    )
-
-
-def _extract_json_ld_movie(soup: BeautifulSoup) -> dict:
-    """
-    Trang phim trên Letterboxd thường nhúng metadata dạng schema.org/Movie
-    trong <script type="application/ld+json">. Trích ra nếu có; nếu không
-    tìm thấy, trả về dict rỗng (không phải lỗi — nhiều trang không phải
-    trang phim, ví dụ trang danh sách, sẽ không có khối này).
-    """
-    for tag in soup.find_all("script", type="application/ld+json"):
-        raw = tag.string
-        if not raw:
-            continue
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-        candidates = data if isinstance(data, list) else [data]
-
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-            if item.get("@type") != "Movie":
-                continue
-
-            director_field = item.get("director")
-            if isinstance(director_field, list):
-                directors = ", ".join(
-                    d.get("name", "") for d in director_field if isinstance(d, dict)
-                )
-            elif isinstance(director_field, dict):
-                directors = director_field.get("name", "")
-            else:
-                directors = ""
-
-            rating = item.get("aggregateRating") or {}
-
-            return {
-                "film_name": item.get("name", ""),
-                "release_year": str(item.get("dateCreated") or item.get("datePublished") or ""),
-                "director": directors,
-                "rating_value": rating.get("ratingValue"),
-                "rating_count": rating.get("ratingCount"),
-            }
-
-    return {}
-
-
-def extract_page_info(soup: BeautifulSoup, url: str, depth: int, status_code: int):
-    parsed = urlparse(url)
-    title = ""
-
-    if soup.title:
-        title = soup.title.get_text(" ", strip=True)
-
-    film_meta = _extract_json_ld_movie(soup)
-
-    # Loại script/style/noscript trước khi lấy visible-ish text.
-    # (Làm sau khi đã đọc JSON-LD ở trên, vì JSON-LD nằm trong <script>.)
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    content = soup.get_text(" ", strip=True)
-    content = re.sub(r"\s+", " ", content)
+    canonical = ""
+    canonical_tag = soup.find("link", rel="canonical")
+    if canonical_tag and canonical_tag.get("href"):
+        canonical = canonical_tag["href"].strip()
 
     return {
-        "url": url,
-        "domain": parsed.netloc,
         "title": title,
         "content": content,
-        "depth": depth,
-        "status_code": status_code,
-        "film_name": film_meta.get("film_name"),
-        "release_year": film_meta.get("release_year"),
-        "director": film_meta.get("director"),
-        "rating_value": film_meta.get("rating_value"),
-        "rating_count": film_meta.get("rating_count"),
+        "page_type": page_type,
+        "canonical_url": canonical,
+        "soup": soup,
     }
 
 
-def extract_links(soup: BeautifulSoup, current_url: str):
-    result = []
+def _field_text(soup, field):
+    node = soup.select_one(f'[data-field="{field}"]')
+    return node.get_text(strip=True) if node else None
+
+
+def _as_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_movie_metadata(page):
+    """Extract structured movie fields FROM THE PARSED HTML page."""
+    if page["page_type"] != "movie":
+        return None
+    soup = page["soup"]
+    main = soup.find("main")
+    tconst = main.get("data-tconst") if main else None
+    if not tconst:
+        return None
+    return {
+        "tconst": tconst,
+        "primary_title": _field_text(soup, "primary_title"),
+        "original_title": _field_text(soup, "original_title"),
+        "start_year": _as_int(_field_text(soup, "start_year")),
+        "runtime_minutes": _as_int(_field_text(soup, "runtime_minutes")),
+        "genres": _field_text(soup, "genres"),
+        "average_rating": _as_float(_field_text(soup, "average_rating")),
+        "num_votes": _as_int(_field_text(soup, "num_votes")),
+        "canonical_url": page.get("canonical_url") or None,
+    }
+
+
+def extract_links_detailed(html, current_url, allowed_netlocs):
+    soup = BeautifulSoup(html, "lxml")
+    stats = Counter()
+    links = []
+    seen = set()
 
     for tag in soup.find_all("a", href=True):
+        stats["raw"] += 1
         href = tag.get("href", "").strip()
-
-        if should_ignore_raw_href(href):
+        if not href:
+            stats["empty"] += 1
+            continue
+        if href.startswith(("mailto:", "javascript:", "tel:")):
+            stats["non_web_scheme"] += 1
             continue
 
         absolute = normalize_url(urljoin(current_url, href))
-
-        if not is_web_url(absolute):
+        p = urlparse(absolute)
+        if p.scheme not in {"http", "https"}:
+            stats["non_http"] += 1
+            continue
+        if p.netloc.lower() not in allowed_netlocs:
+            stats["outside_domain"] += 1
+            continue
+        if p.path.lower().endswith(IGNORED_EXTENSIONS):
+            stats["ignored_extension"] += 1
+            continue
+        if absolute in seen:
+            stats["duplicate_normalized"] += 1
             continue
 
-        parsed = urlparse(absolute)
+        seen.add(absolute)
+        links.append(absolute)
+        stats["accepted"] += 1
 
-        if not allowed_domain(parsed.netloc):
-            continue
-
-        if has_ignored_extension(absolute):
-            continue
-
-        if not is_focused_path(parsed.path):
-            continue
-
-        result.append(absolute)
-
-    # Loại trùng nhưng giữ thứ tự.
-    return list(dict.fromkeys(result))
+    return links, dict(stats)

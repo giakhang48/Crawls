@@ -2,26 +2,53 @@ from collections import deque
 
 
 class URLFrontier:
-    """FIFO queue dùng cho BFS."""
+    """BFS URL Frontier.
+
+    queued prevents the same URL being inserted into the queue twice.
+    visited prevents a crawled URL being requested again.
+    """
 
     def __init__(self):
-        self._queue = deque()
-        self._queued = set()
+        self.queue = deque()
+        self.queued = set()
+        self.visited = set()
 
-    def add(self, url: str, depth: int) -> bool:
-        if url in self._queued:
+    def add(self, url, depth):
+        if url in self.visited or url in self.queued:
             return False
-        self._queue.append((url, depth))
-        self._queued.add(url)
+        self.queue.append((url, depth))
+        self.queued.add(url)
         return True
 
-    def pop(self):
-        url, depth = self._queue.popleft()
-        self._queued.discard(url)
+    def get(self):
+        if not self.queue:
+            return None
+        url, depth = self.queue.popleft()
+        self.queued.discard(url)
         return url, depth
 
-    def __len__(self):
-        return len(self._queue)
+    def peek_depth(self):
+        if not self.queue:
+            return None
+        return self.queue[0][1]
+
+    def get_same_depth_batch(self, max_items):
+        """Pop up to max_items URLs from the current BFS depth only."""
+        if not self.queue:
+            return []
+        depth = self.queue[0][1]
+        batch = []
+        while self.queue and len(batch) < max_items and self.queue[0][1] == depth:
+            url, d = self.queue.popleft()
+            self.queued.discard(url)
+            batch.append((url, d))
+        return batch
+
+    def mark_visited(self, url):
+        self.visited.add(url)
 
     def empty(self):
-        return not self._queue
+        return not self.queue
+
+    def __len__(self):
+        return len(self.queue)
