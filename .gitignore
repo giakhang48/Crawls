@@ -1,0 +1,19 @@
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Crawl output (regenerated on each run, shouldn't be committed)
+data/*.db
+data/*.sqlite
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
