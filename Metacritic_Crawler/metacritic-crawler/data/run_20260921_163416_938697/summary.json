@@ -1,0 +1,36 @@
+{
+  "topic": "Movies & Entertainment",
+  "seed_urls": [
+    "https://www.metacritic.com/browse/movie/"
+  ],
+  "pages_crawled": 10,
+  "page_requests": 11,
+  "unique_urls_discovered": 223,
+  "skipped_url_occurrences": 1464,
+  "skip_reasons": {
+    "url_filter": 1046,
+    "duplicate": 3,
+    "depth_limit": 415
+  },
+  "failed_requests": 1,
+  "maximum_depth_configured": 1,
+  "maximum_depth_reached": 1,
+  "by_depth": {
+    "0": 1,
+    "1": 9
+  },
+  "by_domain": {
+    "www.metacritic.com": 10
+  },
+  "http_statuses": {
+    "200": 10,
+    "301": 1
+  },
+  "stop_reason": "max_pages",
+  "frontier_remaining": 30,
+  "configured_domains": [
+    "www.metacritic.com"
+  ],
+  "domains_collected": 1,
+  "all_configured_domains_have_pages": true
+}

@@ -1,0 +1,44 @@
+# Kết quả crawl thực tế
+
+```json
+{
+  "topic": "Movies & Entertainment",
+  "seed_urls": [
+    "https://www.metacritic.com/browse/movie/"
+  ],
+  "pages_crawled": 100,
+  "page_requests": 101,
+  "unique_urls_discovered": 338,
+  "skipped_url_occurrences": 18177,
+  "skip_reasons": {
+    "url_filter": 13915,
+    "duplicate": 4262
+  },
+  "failed_requests": 1,
+  "maximum_depth_configured": 3,
+  "maximum_depth_reached": 2,
+  "by_depth": {
+    "0": 1,
+    "1": 39,
+    "2": 60
+  },
+  "by_domain": {
+    "www.metacritic.com": 100
+  },
+  "http_statuses": {
+    "200": 100,
+    "301": 1
+  },
+  "stop_reason": "max_pages",
+  "frontier_remaining": 237,
+  "configured_domains": [
+    "www.metacritic.com"
+  ],
+  "domains_collected": 1,
+  "all_configured_domains_have_pages": true
+}
+```
+
+Phạm vi cá nhân: một domain Metacritic. Yêu cầu ít nhất hai domain áp dụng cho bài chung của nhóm.
+
+Đã lưu trang HTML; cần xem title/content để xác nhận đúng nội dung phim trước khi nộp.
