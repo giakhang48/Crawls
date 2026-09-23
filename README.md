@@ -5,6 +5,8 @@
 > **Phương pháp:** Focused Web Crawling + BFS  
 > **Output:** SQLite Database
 
+https://en.wikipedia.org/wiki/Lists_of_films
+
 Crawler thu thập dữ liệu phim trực tiếp từ Wikipedia, bắt đầu từ trang `Lists_of_films`, tự phát hiện hyperlink, lọc URL phù hợp với chủ đề phim và lưu dữ liệu vào SQLite.
 
 ---
